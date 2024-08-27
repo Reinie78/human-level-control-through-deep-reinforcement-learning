@@ -6,6 +6,7 @@ import numpy as np
 import cv2
 from gymnasium.core import ObsType
 from torch import optim
+import argparse
 
 import hyperparameters
 from memory import ReplayMemory
@@ -110,8 +111,10 @@ optimizer = optim.RMSprop(network.parameters(), lr=hyperparameters.learning_rate
                           alpha=hyperparameters.squared_gradient_momentum, eps=hyperparameters.min_squared_gradient)
 should_reset = True
 for frame in range(50_000_000):
+    if frame%100 == 0:
+        print(frame)
     if should_reset:
-        penultimate_observation, info = env.reset(seed=42)
+        penultimate_observation, info = env.reset()
         observation, reward, terminated, truncated, info = env.step(0)
         initial_observations = [(penultimate_observation, observation)]
         if not terminated:
