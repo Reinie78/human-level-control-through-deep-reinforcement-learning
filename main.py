@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 from gymnasium.core import ObsType
-from mpmath import hyper
 from torch import optim
 
 import hyperparameters
@@ -22,7 +21,9 @@ def skip_steps_with_action(env: Env, action: int) -> ObsType:
     """
     for _ in range(hyperparameters.action_repeat - 1):
         observation, reward, terminated, truncated, info = env.step(action)
-    return observation
+        if terminated:
+            break
+    return observation, terminated
 
 
 def merge_screens(screen1: ObsType, screen2: ObsType) -> ObsType:
@@ -102,43 +103,43 @@ def clip(x):
 
 env = gym.make("VideoPinballNoFrameskip-v4", render_mode="rgb_array")
 
-penultimate_observation, info = env.reset(seed=42)
-observation, reward, terminated, truncated, info = env.step(0)
-initial_observations = [(penultimate_observation, observation)]
-
-penultimate_observation = skip_steps_with_action(env, 0)
-
-for _ in range(hyperparameters.agent_history_length - 1):
-    observation, reward, terminated, truncated, info = env.step(0)
-    initial_observations.append((penultimate_observation, observation))
-    penultimate_observation = skip_steps_with_action(env, 0)
-
-network_input = []
-for (penultimate_observation, observation) in initial_observations:
-    network_input.append(preprocess_screen(observation, penultimate_observation))
-
-for i, obs in enumerate(initial_observations):
-    plt.imsave(f"observation_{i}.png", obs)
-for i, obs in enumerate(network_input):
-    plt.imsave(f"observation_merged_{i}_reshaped.png", obs)
-
-last_frame_unmerged = observation
-
 exploration_rate = hyperparameters.initial_exploration
-
 network = DQN(9)
-
 memory = ReplayMemory(hyperparameters.replay_memory_size)
-input_tensor = network_input_to_tensor(network_input)
-
-has_only_chosen_no_op = True
-no_op_chosen_for_frames_count = 0
-
 optimizer = optim.RMSprop(network.parameters(), lr=hyperparameters.learning_rate,
                           alpha=hyperparameters.squared_gradient_momentum, eps=hyperparameters.min_squared_gradient)
-
+should_reset = True
 for frame in range(50_000_000):
-    print(frame)
+    if should_reset:
+        penultimate_observation, info = env.reset(seed=42)
+        observation, reward, terminated, truncated, info = env.step(0)
+        initial_observations = [(penultimate_observation, observation)]
+        if not terminated:
+            penultimate_observation, terminated = skip_steps_with_action(env, 0)
+
+        if not terminated:
+            for _ in range(hyperparameters.agent_history_length - 1):
+                observation, reward, terminated, truncated, info = env.step(0)
+                initial_observations.append((penultimate_observation, observation))
+                penultimate_observation, terminated = skip_steps_with_action(env, 0)
+
+        if not terminated:
+            network_input = []
+            for (penultimate_observation, observation) in initial_observations:
+                network_input.append(preprocess_screen(observation, penultimate_observation))
+
+            for i, obs in enumerate(initial_observations):
+                plt.imsave(f"observation_{i}.png", obs)
+            for i, obs in enumerate(network_input):
+                plt.imsave(f"observation_merged_{i}_reshaped.png", obs)
+
+            last_frame_unmerged = observation
+
+            input_tensor = network_input_to_tensor(network_input)
+
+            has_only_chosen_no_op = True
+            no_op_chosen_for_frames_count = 0
+        should_reset = terminated
     if frame < hyperparameters.replay_start_size or np.random.rand() < exploration_rate:
         action = env.action_space.sample()
     else:
@@ -168,8 +169,7 @@ for frame in range(50_000_000):
     network_input = new_network_input
 
     # LEARNING
-    # if frame >= hyperparameters.replay_start_size and frame % hyperparameters.update_frequency == 0: # TODO: uncomment this and remove lower one
-    if frame>33 and frame % hyperparameters.update_frequency == 0:
+    if frame >= hyperparameters.replay_start_size and frame % hyperparameters.update_frequency == 0:
         minibatch = memory.sample(hyperparameters.minibatch_size)
 
         # Extract the states, actions, next states, and rewards from the minibatch
@@ -198,7 +198,8 @@ for frame in range(50_000_000):
         optimizer.step()
 
     # SKIP AND REMEMBER LAST FRAME
-    last_frame_unmerged = skip_steps_with_action(env, action)
+    if not terminated:
+        last_frame_unmerged, terminated = skip_steps_with_action(env, action)
 
     # ANNEALING
     if frame < hyperparameters.final_exploration_frame:
@@ -207,5 +208,7 @@ for frame in range(50_000_000):
                                        hyperparameters.final_exploration_frame - frame) / hyperparameters.final_exploration_frame
     else:
         exploration_rate = hyperparameters.final_exploration
+    if terminated:
+        should_reset = True
 
 env.close()
