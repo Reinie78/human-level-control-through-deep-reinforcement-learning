@@ -1,12 +1,12 @@
 minibatch_size = 32
 replay_memory_size = 1000000
 agent_history_length = 4
-target_network_frequency_update = 10000
+target_network_frequency_update = 10000 # TODO
 discount_factor = 0.99
 action_repeat = 4
 update_frequency = 4
 learning_rate = 0.00025
-gradient_momentum = 0.95
+gradient_momentum = 0.95 # TODO
 squared_gradient_momentum = 0.95
 min_squared_gradient = 0.01
 initial_exploration = 1.0
