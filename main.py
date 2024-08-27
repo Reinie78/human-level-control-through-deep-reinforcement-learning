@@ -7,6 +7,7 @@ import cv2
 from gymnasium.core import ObsType
 from torch import optim
 import argparse
+from game2netInput import vgname_2_action
 
 import hyperparameters
 from memory import ReplayMemory
@@ -101,11 +102,32 @@ def clip(x):
     """
     return np.maximum(-1.0, np.minimum(x, 1.0))
 
+def save_model(agent, path):
+    torch.save(agent.state_dict(), path)
 
-env = gym.make("VideoPinballNoFrameskip-v4", render_mode="rgb_array")
+def load_model(path):
+    model = network()
+    model.load_state_dict(torch.load(path))
+    return model
+
+
+def args_parse():
+    parser = argparse.ArgumentParser(description="Atari: DQN")
+    parser.add_argument('--env', default="BreakoutNoFrameskip-v4", help='Should be NoFrameskip environment')
+    #parser.add_argument('--train', action="store_true", help='Train agent with given environment')
+    #parser.add_argument('--play', help="Play with a given weight directory")
+    #parser.add_argument('--log_interval', default=100, help="Interval of logging stdout", type=int)
+    #parser.add_argument('--save_weight_interval', default=1000, help="Interval of saving weights", type=int)
+    args = parser.parse_args()
+    return args
+
+
+args = args_parse()
+
+env = gym.make(args.env, render_mode="rgb_array")
 
 exploration_rate = hyperparameters.initial_exploration
-network = DQN(9)
+network = DQN(vgname_2_action[args.env])
 memory = ReplayMemory(hyperparameters.replay_memory_size)
 optimizer = optim.RMSprop(network.parameters(), lr=hyperparameters.learning_rate,
                           alpha=hyperparameters.squared_gradient_momentum, eps=hyperparameters.min_squared_gradient)
@@ -215,3 +237,4 @@ for frame in range(50_000_000):
         should_reset = True
 
 env.close()
+
