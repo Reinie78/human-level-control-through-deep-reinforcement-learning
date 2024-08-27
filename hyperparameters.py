@@ -1,0 +1,16 @@
+minibatch_size = 32
+replay_memory_size = 1000000
+agent_history_length = 4
+target_network_frequency_update = 10000
+discount_factor = 0.99
+action_repeat = 4
+update_frequency = 4
+learning_rate = 0.00025
+gradient_momentum = 0.95
+squared_gradient_momentum = 0.95
+min_squared_gradient = 0.01
+initial_exploration = 1.0
+final_exploration = 0.1
+final_exploration_frame = 1000000
+replay_start_size = 50000
+no_op_max = 30
