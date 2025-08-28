@@ -1,3 +1,6 @@
+from msilib.schema import Property
+
+from torch import mean as tensor_mean
 import numpy as np
 from collections import deque
 import time
@@ -8,13 +11,13 @@ class EpisodeTracker:
         self.current_episode_score = 0
         self.current_episode_length = 0
         self.episode_count = 0
-        self.episode_scores = deque(maxlen=100)  # Keep last 100 episodes
-        self.episode_lengths = deque(maxlen=100)
+        self.episodes = []
         self.best_score = float('-inf')
+        self.csv_saved = 0
 
         # Training metrics
-        self.losses = deque(maxlen=1000)
-        self.q_values = deque(maxlen=1000)
+        self.losses = deque(maxlen=9000)
+        self.q_values = []
         self.td_errors = deque(maxlen=1000)
         self.gradient_norms = deque(maxlen=1000)
 
@@ -56,24 +59,41 @@ class EpisodeTracker:
 
         return None
 
+    def save_everything_to_csv(self, ):
+        np.savetxt(f'save_{self.csv_saved}.csv', self.episodes,delimiter=',')
+        self.csv_saved += 1
+        self.episodes=[]
+
+    def add_q_values(self, q_values):
+        self.q_values.append(tensor_mean(q_values.cpu()))
+
+
     def step(self, reward, terminated, truncated, info):
         """Call this after every env.step()"""
         self.current_episode_score += reward
         self.current_episode_length += 1
 
+
         episode_ended = terminated or truncated
         final_score = None
-
         if episode_ended:
+            time_taken = time.time() - self.start_time
+            self.start_time = time.time()
             # Episode finished - log the score
             final_score = self.current_episode_score
-            self.episode_scores.append(final_score)
-            self.episode_lengths.append(self.current_episode_length)
+            loss_mean = np.mean(self.losses)
+            loss_std = np.std(self.losses)
+#            q_values_mean = np.mean(self.q_values)
+            self.episodes.append((final_score, self.current_episode_length, time_taken, 0 if np.isnan(loss_mean) else loss_mean, 0 if np.isnan(loss_std) else loss_std))
             self.episode_count += 1
+            self.losses.clear()
+            self.q_values.clear()
 
             if final_score > self.best_score:
                 self.best_score = final_score
 
+            if self.episode_count % 100 == 0:
+                self.save_everything_to_csv()
             '''# Try multiple ways to get the "official" score from info
             official_score = self._extract_official_score(info)
 
@@ -95,13 +115,6 @@ class EpisodeTracker:
             self.current_episode_length = 0
 
         return episode_ended, final_score
-
-    def log_action(self, action):
-        """Log action taken - call after action selection"""
-        if action not in self.action_counts:
-            self.action_counts[action] = 0
-        self.action_counts[action] += 1
-        self.total_actions += 1
 
     def get_recent_training_stats(self, window=100):
         """Get recent training statistics"""
@@ -148,6 +161,11 @@ class EpisodeTracker:
             }
         return distribution
 
+    @property
+    def episode_scores(self):
+        episode_scores = [x[0] for x in self.episodes]
+        return episode_scores
+
     def print_comprehensive_stats(self, frame=None):
         """Print comprehensive statistics"""
         print(f"\n{'=' * 60}")
@@ -156,17 +174,19 @@ class EpisodeTracker:
             print(f"Frame: {frame:,}")
         print(f"{'=' * 60}")
 
+        episode_scores= [x[0] for x in self.episodes]
+        episode_lengths = [x[1] for x in self.episodes]
         # Episode statistics
-        if len(self.episode_scores) > 0:
+        if len(episode_scores) > 0:
             print(f"\n🎮 Episode Statistics:")
             print(f"   Episodes completed: {self.episode_count}")
             print(
-                f"   Mean score (last {len(self.episode_scores)}): {np.mean(self.episode_scores):.2f} ± {np.std(self.episode_scores):.2f}")
+                f"   Mean score (last {len(episode_scores)}): {np.mean(episode_scores):.2f} ± {np.std(episode_scores):.2f}")
             print(f"   Best score: {self.best_score:.1f}")
-            print(f"   Mean episode length: {np.mean(self.episode_lengths):.1f}")
+            print(f"   Mean episode length: {np.mean(episode_lengths):.1f}")
 
             # Recent episode scores
-            recent_scores = list(self.episode_scores)[-5:]
+            recent_scores = list(episode_scores)[-5:]
             if recent_scores:
                 print(f"   Last 5 scores: {[f'{s:.1f}' for s in recent_scores]}")
 

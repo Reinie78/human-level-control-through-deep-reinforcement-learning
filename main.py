@@ -1,3 +1,6 @@
+import pickle
+import time
+
 import gymnasium as gym
 import gc
 import ale_py
@@ -219,7 +222,7 @@ exploration_rate = hyperparameters.initial_exploration
 
 main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=False, device=device_for_network)
 
-memory = ReplayMemory(hyperparameters.replay_memory_size)
+
 #optimizer = optim.RMSprop(main_network.parameters(), lr=hyperparameters.learning_rate,
 #                         alpha=hyperparameters.squared_gradient_momentum, eps=hyperparameters.min_squared_gradient)
 optimizer = get_optimizer(main_network, use_pcnn=False)
@@ -229,13 +232,25 @@ optimizer = get_optimizer(main_network, use_pcnn=False)
 ###################################################
 #############   MAIN LOOP #########################
 ###################################################
+start_time = 0
 should_reset = True
+should_use_pickle = True
+start_frame = 0 if not should_use_pickle else hyperparameters.replay_start_size
+memory = ReplayMemory(hyperparameters.replay_memory_size)
+if should_use_pickle:
+    with open(f"memory{hyperparameters.replay_start_size}.pkl", "rb") as pkl:
+        memory.memory = pickle.load(pkl)
+# has_only_chosen_noop = True
+#input_tensor = network_input_to_tensor(network_input).to(device_for_network)
 frame_times = []
 best_score = -float('inf')
 
-for frame in range(hyperparameters.TOTAL_FRAMES):
-#    if frame%100 == 0:
-#        print(frame)
+for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
+
+    if frame == hyperparameters.replay_start_size+1 and not should_use_pickle:
+        with open(f"memory{hyperparameters.replay_start_size}.pkl", "wb") as pkl:
+            pickle.dump(memory.memory, pkl)
+        print("saved")
 
     if frame % 10000 == 0:
         gc.collect()  # Force garbage collection
@@ -247,9 +262,10 @@ for frame in range(hyperparameters.TOTAL_FRAMES):
             print(f"Recent score: {episode_tracker.episode_scores[-1]:.1f}")
 
     if should_reset:
-        penultimate_observation, info = env.reset()
 
-        observation, reward, terminated, truncated, info = env.step(1)
+        penultimate_observation, _info = env.reset()
+
+        observation, reward, terminated, truncated, info = env.step(0)
         episode_ended, final_score = episode_tracker.step(reward, terminated, truncated, info)
 
         initial_observations = [(penultimate_observation, observation)]
@@ -257,15 +273,12 @@ for frame in range(hyperparameters.TOTAL_FRAMES):
         if not terminated:
             penultimate_observation, terminated = skip_steps_with_action(env, 0)
 
-#        if not terminated:
             for _ in range(hyperparameters.agent_history_length - 1):
                 observation, reward, terminated, truncated, info = env.step(0)
- #               episode_ended, final_score = episode_tracker.step(reward, terminated, truncated, info)
-
+                episode_ended, final_score = episode_tracker.step(reward, terminated, truncated, info)
                 initial_observations.append((penultimate_observation, observation))
                 penultimate_observation, terminated = skip_steps_with_action(env, 0)
 
-#        if not terminated:
             network_input = []
             for (penultimate_observation, observation) in initial_observations:
                 network_input.append(preprocess_screen(observation, penultimate_observation))
@@ -280,16 +293,18 @@ for frame in range(hyperparameters.TOTAL_FRAMES):
             has_only_chosen_no_op = True
             no_op_chosen_for_frames_count = 0
 
-        should_reset = terminated
+        should_reset = False #was terminated previously
 
     if frame < hyperparameters.replay_start_size or np.random.rand() < exploration_rate:
         action = env.action_space.sample()
     else:
-        with torch.no_grad():
+        with torch.autocast(device_type='cuda', dtype=torch.float16):
             #action = np.argmax(main_network.forward(input_tensor).detach().numpy())  # TODO check if forward or __call__
             action = main_network(input_tensor.unsqueeze(0)).argmax().item()
             #q_values = main_network(input_tensor.unsqueeze(0))  # Add batch dimension TODO figure this out
             #action = q_values.argmax().item()
+    # if frame % 1000 == 0:
+    #     print(f"Frame {frame} action chosen: {action}")
 
     if has_only_chosen_no_op:
         if action == 0:
@@ -345,11 +360,13 @@ for frame in range(hyperparameters.TOTAL_FRAMES):
         # Compute the Q-values for the current states and actions
         q_values = main_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
+        #with autocast(device_type='cuda', dtype=torch.float16):
 
         # Compute the target Q-values using the target network
-        with torch.no_grad():
+        with torch.autocast(device_type='cuda', dtype=torch.float16): #previously used torch.no_grad
             next_q_values = target_network(next_states).max(1)[0]
             target_q_values = rewards + (hyperparameters.discount_factor * next_q_values * ~dones)
+#            episode_tracker.add_q_values(next_q_values)
 
         # Compute the loss
         loss = torch.nn.functional.smooth_l1_loss(q_values, target_q_values)
@@ -395,10 +412,11 @@ for frame in range(hyperparameters.TOTAL_FRAMES):
                                        hyperparameters.final_exploration_frame - frame) / hyperparameters.final_exploration_frame
     else:
         exploration_rate = hyperparameters.final_exploration
-    if terminated:
+    if terminated or truncated:
         should_reset = True
 
 #print(episode_tracker._extract_official_score())
+save_model(main_network, f"DQN{hyperparameters.TOTAL_FRAMES}v1.pth")
 episode_tracker.print_stats()
 env.close()
 
