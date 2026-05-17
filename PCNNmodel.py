@@ -19,15 +19,12 @@ class PCNN(nn.Module):
             nn.ReLU()
         )
 
-        # Calculate conv output size: ((84-8)/4+1 = 20), ((20-4)/2+1 = 9), ((9-3)/1+1 = 7)
-        # So final size is 7x7x64 = 3136
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(7 * 7 * 64, 512)
-        self.fc2 = nn.Linear(512, num_actions)  # Output layer for Q-values
+        self.fc2 = nn.Linear(512, num_actions)
 
     def forward(self, x):
         # x shape: (batch_size, 4, 84, 84)
-        batch_size = x.size(0)
 
         if len(x.shape) == 3:
             x = x.unsqueeze(0)

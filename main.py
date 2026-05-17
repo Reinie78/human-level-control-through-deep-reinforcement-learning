@@ -24,6 +24,12 @@ from trainingOut import EpisodeTracker
 #os.environ["TORCHINDUCTOR_CACHE_DIR"] = "C:\\temp\\torch_cache"
 #os.environ["TORCHINDUCTOR_DISABLE_CACHE_LOCKING"] = "1"
 
+###TODO:
+### - revamp training loop and clean it up (all in one file ew)
+### - make an eval function as described in the article - 30 episodes for up to 5 minutes (aka terminated status equals the end of an episode)
+### - transform main into a hub for both training and eval
+### - add memory saving after completed training (if they do so in the deepmind article)
+
 
 def initialize_networks(num_actions,device, use_pcnn=False):
     if use_pcnn:
@@ -92,12 +98,6 @@ def soft_update_target_network(main_network, target_network, tau=0.005):
 
 
 def skip_steps_with_action(env: Env, action: int) -> ObsType:
-    """
-
-    :param env: current environment - pracitacllay a global var
-    :param action: - action to be repeated for the steps
-    :return: screen after last step (to be merged with the next screen)
-    """
     for _ in range(hyperparameters.action_repeat - 1):
         observation, reward, terminated, truncated, info = env.step(action)
         if terminated:
@@ -110,52 +110,19 @@ def skip_steps_with_action(env: Env, action: int) -> ObsType:
 ###############################################
 
 def merge_screens(screen1: ObsType, screen2: ObsType) -> ObsType:
-    """
-    First, to encode a single frame we take the maximum value for each pixel colour
-    value over the frame being encoded and the previous frame. This was necessary to
-    remove flickering that is present in games where some objects appear only in even
-    frames while other objects appear only in odd frames, an artefact caused by the
-    limited number of sprites Atari 2600 can display at once.
-
-
-    :param screen1: first screen to be merged
-    :param screen2: second screen to be merged
-    :return: merged screen
-    """
     return np.maximum(screen1, screen2)
 
 
 def extract_luminance(screen: ObsType) -> ObsType:
-    """
-    Second, we then extract
-    the Y channel, also known as luminance, from the RGB frame...
-
-    :param screen: screen to be processed
-    :return: processed screen
-    """
     return 0.299 * screen[:, :, 0] + 0.587 * screen[:, :, 1] + 0.114 * screen[:, :, 2]
 
 
 def resize_screen(screen: ObsType) -> ObsType:
-    """
-    ...and rescale it to 84 x 84.
-
-    :param screen: screen to be resized
-    :return: resized screen
-    """
     return cv2.resize(screen, (84, 84),
                       interpolation=cv2.INTER_LINEAR)
 
 
-# W tym robimy resiza i merge dwóch ekranów żeby zrobić ekran przejścia na podstawie luminance
 def preprocess_screen(screen: ObsType, previous_screen) -> ObsType:
-    """
-    Combining all the above steps
-
-    :param screen: screen to be preprocessed
-    :param previous_screen: previous screen to be merged with the current screen
-    :return: preprocessed screen
-    """
     merged_screen = merge_screens(screen, previous_screen)
     luminance = extract_luminance(merged_screen)
     resized_screen = resize_screen(luminance)
@@ -168,31 +135,18 @@ def network_input_to_tensor(network_input):
 
 
 def clip(x):
-    """
-    As the scale of scores varies greatly from game to game, we clipped all positive
-    rewards at 1 and all negative rewards at 21, leaving 0 rewards unchanged.
-    Clipping the rewards in this manner limits the scale of the error derivatives and
-    makes it easier to use the same learning rate across multiple games. At the same time,
-    it could affect the performance of our agent since it cannot differentiate between
-    rewards of different magnitude
-    :param x:
-    :return:
-    """
     return np.maximum(-1.0, np.minimum(x, 1.0))
 
 def save_model(agent, path):
     torch.save(agent.state_dict(), path)
 
-def load_model(path):
-    model = main_network()
-    model.load_state_dict(torch.load(path))
-    return model
+def load_model(network, path):
+    network.load_state_dict(torch.load(path))
+    return network
 
-# TODO: dodaj argument definiujący sieć z której korzystamy
 def args_parse():
-    #print(gym.envs.registry.keys())
     parser = argparse.ArgumentParser(description="Atari: DQN")
-    parser.add_argument('--env', default="ALE/VideoPinball-v5", help='Should be NoFrameskip environment')
+    parser.add_argument('--env', default="ALE/Pong-v5", help='Should be NoFrameskip environment')
     parser.add_argument('--train', action="store_true", help='Train agent with given environment')
     #parser.add_argument('--PCNN', action="store_true")
     #parser.add_argument('--play', help="Play with a given weight directory")
@@ -211,46 +165,52 @@ args = args_parse()
 
 env = gym.make(args.env, render_mode="rgb_array")
 
-#metrics = TrainingMetrics() ##TODO metrics tracking here
-#current_episode_score = 0
-
 episode_tracker = EpisodeTracker()
 
 exploration_rate = hyperparameters.initial_exploration
 #network = DQN(vgname_2_action[args.env])
 #network = PCNN(input_shape=(4, 84, 84), num_actions=vgname_2_action[args.env])
 
-main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=False, device=device_for_network)
+main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=True, device=device_for_network)
 
 
 #optimizer = optim.RMSprop(main_network.parameters(), lr=hyperparameters.learning_rate,
 #                         alpha=hyperparameters.squared_gradient_momentum, eps=hyperparameters.min_squared_gradient)
-optimizer = get_optimizer(main_network, use_pcnn=False)
+optimizer = get_optimizer(main_network, use_pcnn=True)
 
 
 
 ###################################################
 #############   MAIN LOOP #########################
 ###################################################
+cpcounter = 0
 start_time = 0
 should_reset = True
 should_use_pickle = True
-start_frame = 0 if not should_use_pickle else hyperparameters.replay_start_size
+load_network = False
+#start_frame = 0 if not should_use_pickle else hyperparameters.replay_start_size
 memory = ReplayMemory(hyperparameters.replay_memory_size)
 if should_use_pickle:
+    print("loading memory")
     with open(f"memory{hyperparameters.replay_start_size}.pkl", "rb") as pkl:
         memory.memory = pickle.load(pkl)
-# has_only_chosen_noop = True
 #input_tensor = network_input_to_tensor(network_input).to(device_for_network)
 frame_times = []
 best_score = -float('inf')
 
+if load_network:
+     main_network = load_model(main_network, "PCNNcheck2v1.pth")
+     print("loaded network")
+     start_frame = 2000000
+else:
+    start_frame = 0
+
 for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
 
-    if frame == hyperparameters.replay_start_size+1 and not should_use_pickle:
-        with open(f"memory{hyperparameters.replay_start_size}.pkl", "wb") as pkl:
-            pickle.dump(memory.memory, pkl)
-        print("saved")
+#    if frame == hyperparameters.replay_start_size+1 and not should_use_pickle:
+#        with open(f"memory{hyperparameters.replay_start_size}.pkl", "wb") as pkl:
+#            pickle.dump(memory.memory, pkl)
+#        print("saved")
 
     if frame % 10000 == 0:
         gc.collect()  # Force garbage collection
@@ -283,28 +243,18 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
             for (penultimate_observation, observation) in initial_observations:
                 network_input.append(preprocess_screen(observation, penultimate_observation))
 
-            #for i, obs in enumerate(initial_observations): #TODO odpal pare razy z tym coby były zdjęcia do pracy ALBO ściągnij framy z neta
-            #    plt.imsave(f"observation_{i}.png", obs)
-            # i, obs in enumerate(network_input):
-            #    plt.imsave(f"observation_merged_{i}_reshaped.png", obs)
-
             last_frame_unmerged = observation
             input_tensor = network_input_to_tensor(network_input).to(device_for_network)
             has_only_chosen_no_op = True
             no_op_chosen_for_frames_count = 0
 
-        should_reset = False #was terminated previously
+        should_reset = False
 
     if frame < hyperparameters.replay_start_size or np.random.rand() < exploration_rate:
         action = env.action_space.sample()
     else:
         with torch.autocast(device_type='cuda', dtype=torch.float16):
-            #action = np.argmax(main_network.forward(input_tensor).detach().numpy())  # TODO check if forward or __call__
             action = main_network(input_tensor.unsqueeze(0)).argmax().item()
-            #q_values = main_network(input_tensor.unsqueeze(0))  # Add batch dimension TODO figure this out
-            #action = q_values.argmax().item()
-    # if frame % 1000 == 0:
-    #     print(f"Frame {frame} action chosen: {action}")
 
     if has_only_chosen_no_op:
         if action == 0:
@@ -335,8 +285,9 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
     reward = clip(reward)
 
     input_tensor = new_input_tensor
+    memory.push(input_tensor, action, new_input_tensor, reward, terminated)
     input_tensor = input_tensor.to(device_for_network)
-    memory.push(input_tensor.cpu(), action, new_input_tensor, reward, terminated)
+
 
     network_input = new_network_input
 
@@ -363,9 +314,10 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
         #with autocast(device_type='cuda', dtype=torch.float16):
 
         # Compute the target Q-values using the target network
-        with torch.autocast(device_type='cuda', dtype=torch.float16): #previously used torch.no_grad
-            next_q_values = target_network(next_states).max(1)[0]
-            target_q_values = rewards + (hyperparameters.discount_factor * next_q_values * ~dones)
+        with torch.no_grad():
+            with torch.autocast(device_type='cuda', dtype=torch.float16): #previously used torch.no_grad
+                next_q_values = target_network(next_states).max(1)[0]
+                target_q_values = rewards + (hyperparameters.discount_factor * next_q_values * ~dones)
 #            episode_tracker.add_q_values(next_q_values)
 
         # Compute the loss
@@ -415,8 +367,12 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
     if terminated or truncated:
         should_reset = True
 
+    if frame % 1000000 == 0:
+        save_model(main_network, f"checkpoints/PCNNcheck{cpcounter}v2.pth")
+        cpcounter +=1
+
 #print(episode_tracker._extract_official_score())
-save_model(main_network, f"DQN{hyperparameters.TOTAL_FRAMES}v1.pth")
+
 episode_tracker.print_stats()
 env.close()
 

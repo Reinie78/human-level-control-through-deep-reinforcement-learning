@@ -60,7 +60,7 @@ class EpisodeTracker:
         return None
 
     def save_everything_to_csv(self, ):
-        np.savetxt(f'save_{self.csv_saved}.csv', self.episodes,delimiter=',')
+        np.savetxt(f'/metrics/save_{self.csv_saved}.csv', self.episodes,delimiter=',')
         self.csv_saved += 1
         self.episodes=[]
 
@@ -69,7 +69,6 @@ class EpisodeTracker:
 
 
     def step(self, reward, terminated, truncated, info):
-        """Call this after every env.step()"""
         self.current_episode_score += reward
         self.current_episode_length += 1
 
@@ -94,21 +93,6 @@ class EpisodeTracker:
 
             if self.episode_count % 100 == 0:
                 self.save_everything_to_csv()
-            '''# Try multiple ways to get the "official" score from info
-            official_score = self._extract_official_score(info)
-
-            recent_stats = self.get_recent_training_stats()
-
-            if official_score is not None:
-                print(f"Episode {self.episode_count}: Official Score = {official_score}, "
-                      f"Tracked Score = {final_score}, Length = {self.current_episode_length}")
-
-            if recent_stats['has_training_data']:
-                print(f"   Recent Loss: {recent_stats['avg_loss']:.6f}")
-                if recent_stats['avg_q_value'] is not None:
-                    print(f"   Avg Q-value: {recent_stats['avg_q_value']:.4f}")
-                if recent_stats['exploration_rate'] is not None:
-                    print(f"   Exploration: {recent_stats['exploration_rate']:.3f}")'''
 
             # Reset for next episode
             self.current_episode_score = 0
