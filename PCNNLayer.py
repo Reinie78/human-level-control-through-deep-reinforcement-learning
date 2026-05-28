@@ -6,7 +6,7 @@ import torch.nn.functional as F
 # synaptic weights to nasze pole charakterystyk
 
 class PCNNLayer(nn.Module):
-    def __init__(self, height, width, beta=1.0, decay=0.9, threshold_decay=0.9, iterations=8):
+    def __init__(self, height, width, beta=1.0, decay=0.9, threshold_decay=0.9, iterations=5):
         super(PCNNLayer, self).__init__()
         self.height = height
         self.width = width

@@ -19,6 +19,7 @@ from memory import ReplayMemory
 from DQNmodel import DQN
 from PCNNmodel import PCNN
 from trainingOut import EpisodeTracker
+from eval import evaluate_agent, save_eval_results
 
 #import os
 #os.environ["TORCHINDUCTOR_CACHE_DIR"] = "C:\\temp\\torch_cache"
@@ -26,9 +27,7 @@ from trainingOut import EpisodeTracker
 
 ###TODO:
 ### - revamp training loop and clean it up (all in one file ew)
-### - make an eval function as described in the article - 30 episodes for up to 5 minutes (aka terminated status equals the end of an episode)
-### - transform main into a hub for both training and eval
-### - add memory saving after completed training (if they do so in the deepmind article)
+### - add version with memory being transferred to device
 
 
 def initialize_networks(num_actions,device, use_pcnn=False):
@@ -171,12 +170,12 @@ exploration_rate = hyperparameters.initial_exploration
 #network = DQN(vgname_2_action[args.env])
 #network = PCNN(input_shape=(4, 84, 84), num_actions=vgname_2_action[args.env])
 
-main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=True, device=device_for_network)
+main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=False, device=device_for_network)
 
 
 #optimizer = optim.RMSprop(main_network.parameters(), lr=hyperparameters.learning_rate,
 #                         alpha=hyperparameters.squared_gradient_momentum, eps=hyperparameters.min_squared_gradient)
-optimizer = get_optimizer(main_network, use_pcnn=True)
+optimizer = get_optimizer(main_network, use_pcnn=False)
 
 
 
@@ -186,7 +185,7 @@ optimizer = get_optimizer(main_network, use_pcnn=True)
 cpcounter = 0
 start_time = 0
 should_reset = True
-should_use_pickle = True
+should_use_pickle = False
 load_network = False
 #start_frame = 0 if not should_use_pickle else hyperparameters.replay_start_size
 memory = ReplayMemory(hyperparameters.replay_memory_size)
@@ -367,9 +366,20 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
     if terminated or truncated:
         should_reset = True
 
-    if frame % 1000000 == 0:
-        save_model(main_network, f"checkpoints/PCNNcheck{cpcounter}v2.pth")
-        cpcounter +=1
+    if frame > 0 and frame % 1000000 == 0:
+        print(f"Running eval at frame {frame}...")
+        eval_results = evaluate_agent(
+            main_network,
+            env,
+            device=device_for_network,
+            seed=1_000_000 + frame,  # held-out from training
+            verbose=True,
+        )
+        save_eval_results(eval_results, f"DQNevals/DQNeval_frame_{frame}.json")
+        save_model(main_network, f"DQNcheckpoints/DQNcheck{cpcounter}v2.pth")
+        cpcounter += 1
+        print("Eval ended")
+        should_reset = True
 
 #print(episode_tracker._extract_official_score())
 
