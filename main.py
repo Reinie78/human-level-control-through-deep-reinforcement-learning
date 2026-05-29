@@ -375,7 +375,7 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
             seed=1_000_000 + frame,  # held-out from training
             verbose=True,
         )
-        save_eval_results(eval_results, f"DQNevals/DQNeval_frame_{frame}.json")
+        save_eval_results(eval_results, f"DQNevals/DQNeval_frame_{cpcounter}.json")
         save_model(main_network, f"DQNcheckpoints/DQNcheck{cpcounter}v2.pth")
         cpcounter += 1
         print("Eval ended")
