@@ -67,7 +67,7 @@ def get_optimizer(model, use_pcnn=False):
         # Higher learning rate for PCNN since it has more parameters to train
         optimizer = optim.AdamW(
             model.parameters(),
-            lr=hyperparameters.learning_rate * 2,  # Slightly higher for PCNN
+            lr=hyperparameters.learning_rate,  # Slightly higher for PCNN
             weight_decay=1e-4,
             eps=1e-8
         )
@@ -97,11 +97,13 @@ def soft_update_target_network(main_network, target_network, tau=0.005):
 
 
 def skip_steps_with_action(env: Env, action: int) -> ObsType:
+    total_reward = 0
     for _ in range(hyperparameters.action_repeat - 1):
         observation, reward, terminated, truncated, info = env.step(action)
+        total_reward += reward
         if terminated:
             break
-    return observation, terminated
+    return observation, terminated, total_reward
 
 
 ###############################################
@@ -145,7 +147,7 @@ def load_model(network, path):
 
 def args_parse():
     parser = argparse.ArgumentParser(description="Atari: DQN")
-    parser.add_argument('--env', default="ALE/Pong-v5", help='Should be NoFrameskip environment')
+    parser.add_argument('--env', default="ALE/PongNoFrameskip-v4", help='Should be NoFrameskip environment')
     parser.add_argument('--train', action="store_true", help='Train agent with given environment')
     #parser.add_argument('--PCNN', action="store_true")
     #parser.add_argument('--play', help="Play with a given weight directory")
@@ -170,12 +172,12 @@ exploration_rate = hyperparameters.initial_exploration
 #network = DQN(vgname_2_action[args.env])
 #network = PCNN(input_shape=(4, 84, 84), num_actions=vgname_2_action[args.env])
 
-main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=True, device=device_for_network)
+main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=False, device=device_for_network)
 
 
 #optimizer = optim.RMSprop(main_network.parameters(), lr=hyperparameters.learning_rate,
 #                         alpha=hyperparameters.squared_gradient_momentum, eps=hyperparameters.min_squared_gradient)
-optimizer = get_optimizer(main_network, use_pcnn=True)
+optimizer = get_optimizer(main_network, use_pcnn=False)
 
 
 
@@ -230,13 +232,13 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
         initial_observations = [(penultimate_observation, observation)]
         last_frame_unmerged = observation
         if not terminated:
-            penultimate_observation, terminated = skip_steps_with_action(env, 0)
+            penultimate_observation, terminated, reward = skip_steps_with_action(env, 0)
 
             for _ in range(hyperparameters.agent_history_length - 1):
                 observation, reward, terminated, truncated, info = env.step(0)
                 episode_ended, final_score = episode_tracker.step(reward, terminated, truncated, info)
                 initial_observations.append((penultimate_observation, observation))
-                penultimate_observation, terminated = skip_steps_with_action(env, 0)
+                penultimate_observation, terminated, reward = skip_steps_with_action(env, 0)
 
             network_input = []
             for (penultimate_observation, observation) in initial_observations:
@@ -281,12 +283,23 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
     next_preprocessed_observation = preprocess_screen(observation, last_frame_unmerged)
     new_network_input = network_input[1:] + [next_preprocessed_observation]
     new_input_tensor = network_input_to_tensor(new_network_input)
-    reward = clip(reward)
+
+    # SKIP AND REMEMBER LAST FRAME
+    # Must happen after preprocessing (which needs the old last_frame_unmerged)
+    # but before memory.push() so the skip reward is included in the transition.
+    skip_reward = 0.0
+    if not terminated:
+        last_frame_unmerged, terminated, skip_reward = skip_steps_with_action(env, action)
+
+    # Add skip reward to episode score (episode_tracker.step() already ran for main step)
+    episode_tracker.current_episode_score += skip_reward
+
+    # Clip the combined reward (main step + skip frames) before storing
+    reward = clip(reward + skip_reward)
 
     input_tensor = new_input_tensor
     memory.push(input_tensor, action, new_input_tensor, reward, terminated)
     input_tensor = input_tensor.to(device_for_network)
-
 
     network_input = new_network_input
 
@@ -307,16 +320,13 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
         rewards = torch.tensor(rewards, dtype=torch.float32, device=device_for_network)
         dones = torch.tensor(dones, dtype=torch.bool, device=device_for_network)
 
-        # Compute the Q-values for the current states and actions
+        # Compute the Q-values for the current states and actions (fp32)
         q_values = main_network(states).gather(1, actions.unsqueeze(1)).squeeze(1)
 
-        #with autocast(device_type='cuda', dtype=torch.float16):
-
-        # Compute the target Q-values using the target network
+        # Compute the target Q-values using the target network (fp32, no_grad)
         with torch.no_grad():
-            with torch.autocast(device_type='cuda', dtype=torch.float16): #previously used torch.no_grad
-                next_q_values = target_network(next_states).max(1)[0]
-                target_q_values = rewards + (hyperparameters.discount_factor * next_q_values * ~dones)
+            next_q_values = target_network(next_states).max(1)[0]
+            target_q_values = rewards + (hyperparameters.discount_factor * next_q_values * ~dones)
 #            episode_tracker.add_q_values(next_q_values)
 
         # Compute the loss
@@ -331,7 +341,7 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
 #                total_grad_norm += param.grad.data.norm(2).item() ** 2
 #        total_grad_norm = total_grad_norm ** 0.5
 
-        torch.nn.utils.clip_grad_norm_(main_network.parameters(), max_norm=10.0)
+        torch.nn.utils.clip_grad_norm_(main_network.parameters(), max_norm=1.0)
 
         optimizer.step()
         episode_tracker.losses.append(loss.item())
@@ -352,10 +362,6 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
  #       exploration_rate=exploration_rate
   #  )
 
-    # SKIP AND REMEMBER LAST FRAME
-    if not terminated:
-        last_frame_unmerged, terminated = skip_steps_with_action(env, action)
-
     # ANNEALING
     if frame < hyperparameters.final_exploration_frame:
         exploration_rate = hyperparameters.final_exploration + (
@@ -375,14 +381,25 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
             seed=1_000_000 + frame,  # held-out from training
             verbose=True,
         )
-        save_eval_results(eval_results, f"PCNNevals/PCNNeval_frame_{cpcounter}.json")
-        save_model(main_network, f"PCNNcheckpoints/PCNNcheck{cpcounter}v2.pth")
+        save_eval_results(eval_results, f"DQNevals/DQNeval_frame_{cpcounter}.json")
+        save_model(main_network, f"DQNcheckpoints/DQNcheck{cpcounter}v2.pth")
         cpcounter += 1
         print("Eval ended")
         should_reset = True
 
 #print(episode_tracker._extract_official_score())
 
-episode_tracker.print_stats()
+print(f"Running eval at the end of training...")
+eval_results = evaluate_agent(
+    main_network,
+    env,
+    device=device_for_network,
+    seed=11_000_000,  # held-out from training
+    verbose=True,
+)
+save_eval_results(eval_results, f"DQNevals/DQMeval_frame_{cpcounter}.json")
+save_model(main_network, f"DQNcheckpoints/DQNcheck{cpcounter}v2.pth")
+cpcounter += 1
+print("Eval ended")
 env.close()
 

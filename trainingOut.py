@@ -80,10 +80,17 @@ class EpisodeTracker:
             self.start_time = time.time()
             # Episode finished - log the score
             final_score = self.current_episode_score
-            loss_mean = np.mean(self.losses)
-            loss_std = np.std(self.losses)
+            if len(self.losses) > 0:
+                loss_mean = np.mean(self.losses)
+                loss_std = np.std(self.losses)
+            else:
+                loss_mean = 0.0
+                loss_std = 0.0
 #            q_values_mean = np.mean(self.q_values)
-            self.episodes.append((final_score, self.current_episode_length, time_taken, 0 if np.isnan(loss_mean) else loss_mean, 0 if np.isnan(loss_std) else loss_std))
+            # Use -1 as a sentinel for bad loss values so crashes are visible in the CSV
+            def sanitize(v):
+                return -1.0 if (np.isnan(v) or np.isinf(v)) else float(v)
+            self.episodes.append((final_score, self.current_episode_length, time_taken, sanitize(loss_mean), sanitize(loss_std)))
             self.episode_count += 1
             self.losses.clear()
             self.q_values.clear()
