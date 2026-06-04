@@ -170,12 +170,12 @@ exploration_rate = hyperparameters.initial_exploration
 #network = DQN(vgname_2_action[args.env])
 #network = PCNN(input_shape=(4, 84, 84), num_actions=vgname_2_action[args.env])
 
-main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=False, device=device_for_network)
+main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=True, device=device_for_network)
 
 
 #optimizer = optim.RMSprop(main_network.parameters(), lr=hyperparameters.learning_rate,
 #                         alpha=hyperparameters.squared_gradient_momentum, eps=hyperparameters.min_squared_gradient)
-optimizer = get_optimizer(main_network, use_pcnn=False)
+optimizer = get_optimizer(main_network, use_pcnn=True)
 
 
 
@@ -375,8 +375,8 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
             seed=1_000_000 + frame,  # held-out from training
             verbose=True,
         )
-        save_eval_results(eval_results, f"DQNevals/DQNeval_frame_{cpcounter}.json")
-        save_model(main_network, f"DQNcheckpoints/DQNcheck{cpcounter}v2.pth")
+        save_eval_results(eval_results, f"PCNNevals/PCNNeval_frame_{cpcounter}.json")
+        save_model(main_network, f"PCNNcheckpoints/PCNNcheck{cpcounter}v2.pth")
         cpcounter += 1
         print("Eval ended")
         should_reset = True

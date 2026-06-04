@@ -60,7 +60,7 @@ class EpisodeTracker:
         return None
 
     def save_everything_to_csv(self, ):
-        np.savetxt(f'metrics/save_{self.csv_saved}.csv', self.episodes,delimiter=',')
+        np.savetxt(f'PCNNmetrics/save_{self.csv_saved}.csv', self.episodes,delimiter=',')
         self.csv_saved += 1
         self.episodes=[]
 
