@@ -297,8 +297,9 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
     # Clip the combined reward (main step + skip frames) before storing
     reward = clip(reward + skip_reward)
 
-    input_tensor = new_input_tensor
+
     memory.push(input_tensor, action, new_input_tensor, reward, terminated)
+    input_tensor = new_input_tensor
     input_tensor = input_tensor.to(device_for_network)
 
     network_input = new_network_input
@@ -397,7 +398,7 @@ eval_results = evaluate_agent(
     seed=11_000_000,  # held-out from training
     verbose=True,
 )
-save_eval_results(eval_results, f"DQNevals/DQMeval_frame_{cpcounter}.json")
+save_eval_results(eval_results, f"DQNevals/DQNeval_frame_{cpcounter}.json")
 save_model(main_network, f"DQNcheckpoints/DQNcheck{cpcounter}v2.pth")
 cpcounter += 1
 print("Eval ended")
