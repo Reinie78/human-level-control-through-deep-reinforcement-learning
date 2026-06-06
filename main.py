@@ -147,7 +147,7 @@ def load_model(network, path):
 
 def args_parse():
     parser = argparse.ArgumentParser(description="Atari: DQN")
-    parser.add_argument('--env', default="ALE/PongNoFrameskip-v4", help='Should be NoFrameskip environment')
+    parser.add_argument('--env', default="ALE/Pong-v5", help='Should be NoFrameskip environment')
     parser.add_argument('--train', action="store_true", help='Train agent with given environment')
     #parser.add_argument('--PCNN', action="store_true")
     #parser.add_argument('--play', help="Play with a given weight directory")
@@ -164,7 +164,7 @@ torch.backends.cudnn.deterministic = False
 
 args = args_parse()
 
-env = gym.make(args.env, render_mode="rgb_array")
+env = gym.make(args.env, render_mode="rgb_array", repeat_action_probability=0.0)
 
 episode_tracker = EpisodeTracker()
 
