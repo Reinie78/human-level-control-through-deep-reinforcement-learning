@@ -1,5 +1,5 @@
 minibatch_size = 32 ### might want to increase
-replay_memory_size = 100000 ### CANNOT USE MORE THAN 100K - 17 GB AT 80000 TUPLES
+replay_memory_size = 200000 ### CANNOT USE MORE THAN 100K - 17 GB AT 80000 TUPLES
 agent_history_length = 4
 target_network_frequency_update = 10000
 discount_factor = 0.99
