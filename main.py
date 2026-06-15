@@ -224,21 +224,27 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
 
     if should_reset:
 
+        # Drop any partial episode left over from a forced (e.g. eval) reset so
+        # its reward/length is not carried into the new episode.
+        episode_tracker.reset_current()
+
         penultimate_observation, _info = env.reset()
 
         observation, reward, terminated, truncated, info = env.step(0)
-        episode_ended, final_score = episode_tracker.step(reward, terminated, truncated, info)
+        episode_tracker.record_step(reward, frames=1)
 
         initial_observations = [(penultimate_observation, observation)]
         last_frame_unmerged = observation
         if not terminated:
             penultimate_observation, terminated, reward = skip_steps_with_action(env, 0)
+            episode_tracker.record_step(reward, frames=hyperparameters.action_repeat - 1)
 
             for _ in range(hyperparameters.agent_history_length - 1):
                 observation, reward, terminated, truncated, info = env.step(0)
-                episode_ended, final_score = episode_tracker.step(reward, terminated, truncated, info)
+                episode_tracker.record_step(reward, frames=1)
                 initial_observations.append((penultimate_observation, observation))
                 penultimate_observation, terminated, reward = skip_steps_with_action(env, 0)
+                episode_tracker.record_step(reward, frames=hyperparameters.action_repeat - 1)
 
             network_input = []
             for (penultimate_observation, observation) in initial_observations:
@@ -270,7 +276,7 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
 
     # STEP
     observation, reward, terminated, truncated, info = env.step(action)
-    episode_ended, final_score = episode_tracker.step(reward, terminated, truncated, info)
+    episode_tracker.record_step(reward, frames=1)
 
 
 
@@ -290,9 +296,8 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
     skip_reward = 0.0
     if not terminated:
         last_frame_unmerged, terminated, skip_reward = skip_steps_with_action(env, action)
-
-    # Add skip reward to episode score (episode_tracker.step() already ran for main step)
-    episode_tracker.current_episode_score += skip_reward
+        # Record the skip frames' reward and length for the current episode.
+        episode_tracker.record_step(skip_reward, frames=hyperparameters.action_repeat - 1)
 
     # Clip the combined reward (main step + skip frames) before storing
     reward = clip(reward + skip_reward)
@@ -345,7 +350,7 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
         torch.nn.utils.clip_grad_norm_(main_network.parameters(), max_norm=1.0)
 
         optimizer.step()
-        episode_tracker.losses.append(loss.item())
+        episode_tracker.record_loss(loss.item())
 
         if hasattr(hyperparameters, 'USE_SOFT_UPDATE') and hyperparameters.USE_SOFT_UPDATE:
             # Soft update every step
@@ -371,6 +376,9 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
     else:
         exploration_rate = hyperparameters.final_exploration
     if terminated or truncated:
+        # Finalise the episode exactly once, using the post-skip terminal flag
+        # so terminations landing on a frame-skip step are not missed.
+        episode_tracker.end_episode()
         should_reset = True
 
     if frame > 0 and frame % 1000000 == 0:
@@ -382,8 +390,8 @@ for frame in range(start_frame, hyperparameters.TOTAL_FRAMES):
             seed=1_000_000 + frame,  # held-out from training
             verbose=True,
         )
-        save_eval_results(eval_results, f"PCNNevals/PCNNeval_frame_{cpcounter}.json")
-        save_model(main_network, f"PCNNcheckpoints/PCNNcheck{cpcounter}v2.pth")
+        save_eval_results(eval_results, f"DQNevals/DQNeval_frame_{cpcounter}.json")
+        save_model(main_network, f"DQNcheckpoints/DQNcheck{cpcounter}v2.pth")
         cpcounter += 1
         print("Eval ended")
         should_reset = True
@@ -398,8 +406,8 @@ eval_results = evaluate_agent(
     seed=11_000_000,  # held-out from training
     verbose=True,
 )
-save_eval_results(eval_results, f"PCNNevals/PCNNeval_frame_{cpcounter}.json")
-save_model(main_network, f"PCNNcheckpoints/PCNNcheck{cpcounter}v2.pth")
+save_eval_results(eval_results, f"DQNevals/DQNeval_frame_{cpcounter}.json")
+save_model(main_network, f"DQNcheckpoints/DQNcheck{cpcounter}v2.pth")
 cpcounter += 1
 print("Eval ended")
 env.close()

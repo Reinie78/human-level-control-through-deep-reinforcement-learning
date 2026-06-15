@@ -254,11 +254,23 @@ def evaluate_agent(
     wall_time = time.perf_counter() - t_start
     returns_arr = np.asarray(returns, dtype=np.float64)
 
+    n = len(returns_arr)
+    std_return = float(returns_arr.std(ddof=1)) if n > 1 else 0.0
+    std_error = std_return / np.sqrt(n) if n > 0 else 0.0
+    # 95% normal-approximation confidence interval for the mean return.
+    ci95_half = 1.96 * std_error
+    mean_return = float(returns_arr.mean()) if n > 0 else 0.0
+
     results = {
         "n_episodes": n_episodes,
         "epsilon": epsilon,
-        "mean_return": float(returns_arr.mean()),
-        "std_return": float(returns_arr.std(ddof=1)) if len(returns) > 1 else 0.0,
+        "seed": seed,
+        "mean_return": mean_return,
+        "std_return": std_return,
+        "std_error": float(std_error),
+        "ci95_half_width": float(ci95_half),
+        "ci95_low": float(mean_return - ci95_half),
+        "ci95_high": float(mean_return + ci95_half),
         "median_return": float(np.median(returns_arr)),
         "min_return": float(returns_arr.min()),
         "max_return": float(returns_arr.max()),
@@ -272,13 +284,136 @@ def evaluate_agent(
         print(
             f"Eval over {n_episodes} episodes (eps={epsilon}): "
             f"return = {results['mean_return']:.2f} +/- {results['std_return']:.2f} "
-            f"(median {results['median_return']:.2f}, "
+            f"(95% CI [{results['ci95_low']:.2f}, {results['ci95_high']:.2f}], "
+            f"median {results['median_return']:.2f}, "
             f"min {results['min_return']:.2f}, max {results['max_return']:.2f}), "
             f"mean length = {results['mean_length']:.1f} frames, "
             f"wall_time = {wall_time:.1f}s"
         )
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Run an evaluation from a saved weights file (checkpoint).
+# ---------------------------------------------------------------------------
+
+def evaluate_checkpoint(
+    weights_path: str,
+    model: str = "pcnn",
+    env_id: str = "ALE/Pong-v5",
+    n_episodes: int = 50,
+    epsilon: float = 0.05,
+    seed: int = 0,
+    device: torch.device | None = None,
+    out_path: str | None = None,
+    verbose: bool = True,
+) -> dict:
+    """Load a trained weight set from disk and evaluate it.
+
+    Builds the env and network exactly as training does, loads the state_dict
+    from `weights_path`, runs evaluate_agent(), and (optionally) saves the
+    results JSON to `out_path`.
+
+    Args:
+        weights_path: Path to a .pth state_dict saved by main.py's save_model().
+        model: "dqn" or "pcnn" -- which architecture the weights belong to.
+        env_id: Gymnasium env id (must match the training env).
+        n_episodes: Number of eval episodes (50 gives a tighter CI than 30).
+        epsilon: Evaluation epsilon (0.05 = DeepMind protocol).
+        seed: Base seed; episode k uses seed + k. Use the SAME seed across the
+              models/runs you compare so they face identical start conditions.
+        device: Torch device; defaults to cuda if available.
+        out_path: If given, the results dict is written there as JSON.
+        verbose: Print per-episode and summary lines.
+
+    Returns:
+        The results dict from evaluate_agent (with CI fields).
+    """
+    import gymnasium as gym
+    import ale_py  # noqa: F401  (registers ALE envs as a side effect)
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    env = gym.make(env_id, render_mode="rgb_array", repeat_action_probability=0.0)
+    n_actions = env.action_space.n
+
+    model = model.lower()
+    if model == "pcnn":
+        from PCNNmodel import PCNN
+        network = PCNN(input_shape=(4, 84, 84), num_actions=n_actions)
+    elif model == "dqn":
+        from DQNmodel import DQN
+        network = DQN(n_actions)
+    else:
+        raise ValueError(f"Unknown model '{model}', expected 'dqn' or 'pcnn'.")
+
+    state_dict = torch.load(weights_path, map_location=device)
+    network.load_state_dict(state_dict)
+    network.to(device)
+    network.eval()
+
+    if verbose:
+        print(f"Loaded {model.upper()} weights from {weights_path}")
+        print(f"Evaluating on {env_id}: {n_episodes} episodes, eps={epsilon}, seed={seed}")
+
+    results = evaluate_agent(
+        network,
+        env,
+        n_episodes=n_episodes,
+        epsilon=epsilon,
+        device=device,
+        seed=seed,
+        verbose=verbose,
+    )
+    results["model"] = model
+    results["env"] = env_id
+    results["weights_path"] = weights_path
+
+    if out_path is not None:
+        save_eval_results(results, out_path)
+        if verbose:
+            print(f"Saved eval results to {out_path}")
+
+    env.close()
+    return results
+
+
+def _build_cli():
+    import argparse
+
+    p = argparse.ArgumentParser(
+        description="Evaluate a trained DQN/PCNN checkpoint from a weights file."
+    )
+    p.add_argument("weights", help="Path to the .pth state_dict to evaluate.")
+    p.add_argument("--model", default="pcnn", choices=["dqn", "pcnn"],
+                   help="Architecture the weights belong to (default: pcnn).")
+    p.add_argument("--env", default="ALE/Pong-v5", help="Gymnasium env id.")
+    p.add_argument("--n-episodes", type=int, default=50,
+                   help="Number of evaluation episodes (default: 50).")
+    p.add_argument("--epsilon", type=float, default=0.05,
+                   help="Evaluation epsilon (default: 0.05).")
+    p.add_argument("--seed", type=int, default=0,
+                   help="Base seed; keep identical across compared runs.")
+    p.add_argument("--out", default=None,
+                   help="Optional path to write the results JSON.")
+    p.add_argument("--quiet", action="store_true", help="Suppress per-episode prints.")
+    return p
+
+
+if __name__ == "__main__":
+    _args = _build_cli().parse_args()
+    evaluate_checkpoint(
+        weights_path=_args.weights,
+        model=_args.model,
+        env_id=_args.env,
+        n_episodes=_args.n_episodes,
+        epsilon=_args.epsilon,
+        seed=_args.seed,
+        out_path=_args.out,
+        verbose=not _args.quiet,
+    )
 
 
 def save_eval_results(results: dict, path: str) -> None:

@@ -1,227 +1,192 @@
-
-
-from torch import mean as tensor_mean
-import numpy as np
-from collections import deque
+import os
 import time
+from collections import deque
+
+import numpy as np
+from torch import mean as tensor_mean
 
 
 class EpisodeTracker:
-    def __init__(self):
-        self.current_episode_score = 0
+    """Tracks per-episode training metrics.
+
+    Correct usage (see main.py):
+        tracker.reset_current()          # at the start of every fresh episode
+        tracker.record_step(r, frames)   # once per environment transition
+        tracker.record_loss(loss)        # once per optimisation step
+        tracker.end_episode()            # exactly once, when terminated/truncated
+
+    The previous implementation logged an episode whenever step() happened to be
+    called with terminated=True. Because Pong terminations frequently land on a
+    frame-skip step (not the main step), the terminal was often missed and the
+    score/length kept accumulating across several games -- producing the
+    inflated values (scores in the hundreds, lengths far exceeding one game).
+    Splitting reward accumulation (record_step) from finalisation (end_episode)
+    removes that bug: each real episode is closed exactly once.
+    """
+
+    def __init__(self, metrics_dir="DQNmetrics", save_every=100):
+        self.metrics_dir = metrics_dir
+        self.save_every = save_every
+
+        self.current_episode_score = 0.0
         self.current_episode_length = 0
         self.episode_count = 0
         self.episodes = []
-        self.best_score = float('-inf')
+        self.best_score = float("-inf")
         self.csv_saved = 0
 
-        # Training metrics
-        self.losses = deque(maxlen=9000)
+        # Per-episode optimisation losses (cleared at each end_episode()).
+        self.losses = []
+
+        # Optional extra diagnostics kept from the original tracker.
         self.q_values = []
-        self.td_errors = deque(maxlen=1000)
-        self.gradient_norms = deque(maxlen=1000)
+        self.exploration_rates = deque(maxlen=1000)
 
-        # Action tracking
-        self.action_counts = {}
-        self.total_actions = 0
-
-        # Performance tracking
+        # Timing: wall-clock between consecutive episode ends.
         self.start_time = time.time()
         self.total_frames = 0
         self.last_log_time = time.time()
         self.last_log_frame = 0
 
-        # Exploration tracking
-        self.exploration_rates = deque(maxlen=1000)
+        os.makedirs(self.metrics_dir, exist_ok=True)
 
-    def _extract_official_score(self, info):
-        """Try to extract official score from info dict"""
-        if not isinstance(info, dict):
-            return None
+    # ------------------------------------------------------------------
+    # Recording
+    # ------------------------------------------------------------------
+    def reset_current(self):
+        """Discard any in-progress (e.g. eval-interrupted) partial episode.
 
-        # Method 1: Direct episode info (newer gym versions)
-        if 'episode' in info:
-            episode_info = info['episode']
-            if isinstance(episode_info, dict):
-                if 'r' in episode_info:
-                    return episode_info['r']
-                if 'total_reward' in episode_info:
-                    return episode_info['total_reward']
+        A normally finished episode already has these counters at zero after
+        end_episode(), so calling this at the top of a fresh episode is a no-op
+        in the common case and only matters after a forced mid-game reset.
+        """
+        self.current_episode_score = 0.0
+        self.current_episode_length = 0
+        self.losses.clear()
 
-        # Method 2: ALE specific info
-        if 'ale.lives' in info and 'ale.score' in info:
-            return info['ale.score']
+    def record_step(self, reward, frames=1):
+        """Accumulate reward and frame count for the current episode."""
+        self.current_episode_score += float(reward)
+        self.current_episode_length += int(frames)
+        self.total_frames += int(frames)
 
-        # Method 3: Other common keys
-        for key in ['score', 'total_reward', 'episode_reward', 'return']:
-            if key in info:
-                return info[key]
-
-        return None
-
-    def save_everything_to_csv(self, ):
-        np.savetxt(f'PCNNmetrics/save_{self.csv_saved}.csv', self.episodes,delimiter=',')
-        self.csv_saved += 1
-        self.episodes=[]
+    def record_loss(self, loss):
+        self.losses.append(float(loss))
 
     def add_q_values(self, q_values):
         self.q_values.append(tensor_mean(q_values.cpu()))
 
+    # ------------------------------------------------------------------
+    # Finalisation
+    # ------------------------------------------------------------------
+    def end_episode(self):
+        """Finalise the current episode exactly once, log it, and reset."""
+        time_taken = time.time() - self.start_time
+        self.start_time = time.time()
 
-    def step(self, reward, terminated, truncated, info):
-        self.current_episode_score += reward
-        self.current_episode_length += 1
-
-
-        episode_ended = terminated or truncated
-        final_score = None
-        if episode_ended:
-            time_taken = time.time() - self.start_time
-            self.start_time = time.time()
-            # Episode finished - log the score
-            final_score = self.current_episode_score
-            if len(self.losses) > 0:
-                loss_mean = np.mean(self.losses)
-                loss_std = np.std(self.losses)
-            else:
-                loss_mean = 0.0
-                loss_std = 0.0
-#            q_values_mean = np.mean(self.q_values)
-            # Use -1 as a sentinel for bad loss values so crashes are visible in the CSV
-            def sanitize(v):
-                return -1.0 if (np.isnan(v) or np.isinf(v)) else float(v)
-            self.episodes.append((final_score, self.current_episode_length, time_taken, sanitize(loss_mean), sanitize(loss_std)))
-            self.episode_count += 1
-            self.losses.clear()
-            self.q_values.clear()
-
-            if final_score > self.best_score:
-                self.best_score = final_score
-
-            if self.episode_count % 100 == 0:
-                self.save_everything_to_csv()
-
-            # Reset for next episode
-            self.current_episode_score = 0
-            self.current_episode_length = 0
-
-        return episode_ended, final_score
-
-    def get_recent_training_stats(self, window=100):
-        """Get recent training statistics"""
-        stats = {
-            'has_training_data': len(self.losses) > 0,
-            'avg_loss': None,
-            'avg_q_value': None,
-            'avg_td_error': None,
-            'avg_gradient_norm': None,
-            'exploration_rate': None
-        }
+        final_score = self.current_episode_score
 
         if len(self.losses) > 0:
-            recent_losses = list(self.losses)[-window:]
-            stats['avg_loss'] = np.mean(recent_losses)
+            loss_mean = float(np.mean(self.losses))
+            loss_std = float(np.std(self.losses))
+        else:
+            loss_mean = 0.0
+            loss_std = 0.0
 
-        if len(self.q_values) > 0:
-            recent_q = list(self.q_values)[-window:]
-            stats['avg_q_value'] = np.mean(recent_q)
+        def sanitize(v):
+            return -1.0 if (np.isnan(v) or np.isinf(v)) else float(v)
 
-        if len(self.td_errors) > 0:
-            recent_td = list(self.td_errors)[-window:]
-            stats['avg_td_error'] = np.mean(recent_td)
+        self.episodes.append(
+            (
+                final_score,
+                self.current_episode_length,
+                time_taken,
+                sanitize(loss_mean),
+                sanitize(loss_std),
+            )
+        )
+        self.episode_count += 1
 
-        if len(self.gradient_norms) > 0:
-            recent_grad = list(self.gradient_norms)[-window:]
-            stats['avg_gradient_norm'] = np.mean(recent_grad)
+        if final_score > self.best_score:
+            self.best_score = final_score
 
-        if len(self.exploration_rates) > 0:
-            stats['exploration_rate'] = self.exploration_rates[-1]
+        if self.episode_count % self.save_every == 0:
+            self.save_everything_to_csv()
 
-        return stats
+        # Reset for the next episode.
+        self.current_episode_score = 0.0
+        self.current_episode_length = 0
+        self.losses.clear()
+        self.q_values.clear()
 
-    def get_action_distribution(self):
-        """Get current action distribution"""
-        if self.total_actions == 0:
-            return {}
+        return final_score
 
-        distribution = {}
-        for action, count in self.action_counts.items():
-            distribution[action] = {
-                'count': count,
-                'percentage': (count / self.total_actions) * 100
-            }
-        return distribution
+    def save_everything_to_csv(self):
+        path = os.path.join(self.metrics_dir, f"save_{self.csv_saved}.csv")
+        np.savetxt(path, self.episodes, delimiter=",")
+        self.csv_saved += 1
+        self.episodes = []
 
+    # ------------------------------------------------------------------
+    # Backward-compatible helper (kept so old callers don't crash).
+    # ------------------------------------------------------------------
+    def step(self, reward, terminated, truncated, info=None, frames=1):
+        """Deprecated combined call. Prefer record_step()/end_episode().
+
+        Records the reward and, if the transition is terminal, finalises the
+        episode. Kept only for compatibility with code paths that still pass a
+        full (reward, terminated, truncated) tuple.
+        """
+        self.record_step(reward, frames=frames)
+        final_score = None
+        episode_ended = bool(terminated or truncated)
+        if episode_ended:
+            final_score = self.end_episode()
+        return episode_ended, final_score
+
+    # ------------------------------------------------------------------
+    # Stats / reporting
+    # ------------------------------------------------------------------
     @property
     def episode_scores(self):
-        episode_scores = [x[0] for x in self.episodes]
-        return episode_scores
+        return [x[0] for x in self.episodes]
+
+    def get_recent_training_stats(self, window=100):
+        stats = {
+            "has_training_data": len(self.losses) > 0,
+            "avg_loss": None,
+            "avg_q_value": None,
+            "exploration_rate": None,
+        }
+        if len(self.losses) > 0:
+            stats["avg_loss"] = float(np.mean(self.losses[-window:]))
+        if len(self.q_values) > 0:
+            stats["avg_q_value"] = float(np.mean([float(q) for q in self.q_values[-window:]]))
+        if len(self.exploration_rates) > 0:
+            stats["exploration_rate"] = self.exploration_rates[-1]
+        return stats
 
     def print_comprehensive_stats(self, frame=None):
-        """Print comprehensive statistics"""
         print(f"\n{'=' * 60}")
-        print(f"📊 COMPREHENSIVE TRAINING STATISTICS")
+        print("COMPREHENSIVE TRAINING STATISTICS")
         if frame:
             print(f"Frame: {frame:,}")
         print(f"{'=' * 60}")
 
-        episode_scores= [x[0] for x in self.episodes]
-        episode_lengths = [x[1] for x in self.episodes]
-        # Episode statistics
-        if len(episode_scores) > 0:
-            print(f"\n🎮 Episode Statistics:")
+        scores = [x[0] for x in self.episodes]
+        lengths = [x[1] for x in self.episodes]
+        if len(scores) > 0:
+            print("\nEpisode Statistics:")
             print(f"   Episodes completed: {self.episode_count}")
-            print(
-                f"   Mean score (last {len(episode_scores)}): {np.mean(episode_scores):.2f} ± {np.std(episode_scores):.2f}")
+            print(f"   Mean score (last {len(scores)}): {np.mean(scores):.2f} +/- {np.std(scores):.2f}")
             print(f"   Best score: {self.best_score:.1f}")
-            print(f"   Mean episode length: {np.mean(episode_lengths):.1f}")
+            print(f"   Mean episode length: {np.mean(lengths):.1f}")
+            print(f"   Last 5 scores: {[f'{s:.1f}' for s in scores[-5:]]}")
 
-            # Recent episode scores
-            recent_scores = list(episode_scores)[-5:]
-            if recent_scores:
-                print(f"   Last 5 scores: {[f'{s:.1f}' for s in recent_scores]}")
-
-        # Training metrics
         training_stats = self.get_recent_training_stats()
-        if training_stats['has_training_data']:
-            print(f"\n🔧 Training Metrics (recent averages):")
-            if training_stats['avg_loss'] is not None:
+        if training_stats["has_training_data"]:
+            print("\nTraining Metrics (recent averages):")
+            if training_stats["avg_loss"] is not None:
                 print(f"   Loss: {training_stats['avg_loss']:.6f}")
-            if training_stats['avg_q_value'] is not None:
-                print(f"   Q-values: {training_stats['avg_q_value']:.4f}")
-            if training_stats['avg_td_error'] is not None:
-                print(f"   TD Error: {training_stats['avg_td_error']:.4f}")
-            if training_stats['avg_gradient_norm'] is not None:
-                print(f"   Gradient Norm: {training_stats['avg_gradient_norm']:.4f}")
-            if training_stats['exploration_rate'] is not None:
+            if training_stats["exploration_rate"] is not None:
                 print(f"   Exploration Rate: {training_stats['exploration_rate']:.3f}")
-
-        # Action distribution
-        action_dist = self.get_action_distribution()
-        if action_dist:
-            print(f"\n🎯 Action Distribution:")
-            for action in sorted(action_dist.keys()):
-                count = action_dist[action]['count']
-                pct = action_dist[action]['percentage']
-                print(f"   Action {action}: {count:,} ({pct:.1f}%)")
-
-        # Performance metrics
-        if self.total_frames > 0:
-            elapsed = time.time() - self.start_time
-            fps = self.total_frames / elapsed if elapsed > 0 else 0
-
-            # Recent FPS
-            current_time = time.time()
-            time_since_last = current_time - self.last_log_time
-            frames_since_last = self.total_frames - self.last_log_frame
-            recent_fps = frames_since_last / time_since_last if time_since_last > 0 else 0
-
-            print(f"\n⚡ Performance:")
-            print(f"   Total frames: {self.total_frames:,}")
-            print(f"   Overall FPS: {fps:.1f}")
-            print(f"   Recent FPS: {recent_fps:.1f}")
-            print(f"   Training time: {elapsed / 3600:.2f} hours")
-
-            # Update for next calculation
-            self.last_log_time = current_time
-            self.last_log_frame = self.total_frames
