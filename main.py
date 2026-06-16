@@ -172,7 +172,7 @@ exploration_rate = hyperparameters.initial_exploration
 #network = DQN(vgname_2_action[args.env])
 #network = PCNN(input_shape=(4, 84, 84), num_actions=vgname_2_action[args.env])
 
-main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=True, device=device_for_network)
+main_network, target_network = initialize_networks(vgname_2_action[args.env], use_pcnn=False, device=device_for_network)
 
 
 #optimizer = optim.RMSprop(main_network.parameters(), lr=hyperparameters.learning_rate,
