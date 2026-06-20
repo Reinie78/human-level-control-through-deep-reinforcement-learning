@@ -24,7 +24,7 @@ class EpisodeTracker:
     removes that bug: each real episode is closed exactly once.
     """
 
-    def __init__(self, metrics_dir="DQNmetrics", save_every=100):
+    def __init__(self, metrics_dir="PCNNmetrics", save_every=100):
         self.metrics_dir = metrics_dir
         self.save_every = save_every
 
