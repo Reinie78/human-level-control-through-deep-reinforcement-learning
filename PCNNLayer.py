@@ -31,6 +31,7 @@ class PCNNLayer(nn.Module):
         y_out = torch.zeros_like(x)
 
         for t in range(self.iterations):
+            f = self.decay * f + x
             if t > 0:
                 L = F.conv2d(y, self.kernel, padding=1)
             else:
